@@ -229,6 +229,8 @@ pub fn spawn(device: String, frames: Frames, exposure_lines: u32, analogue_gain_
         .spawn(move || {
             let mut ae = Ae::starting_at(exposure_lines, analogue_gain_reg);
             let mut proven = false;
+            // whether the isp is holding a digital gain above 1x. see `worth_writing_gain`.
+            let mut raised = false;
             let mut waiting_logged = false;
             // Ticks since the last write, for the re-assert heartbeat.
             let mut quiet = 0u32;
@@ -290,7 +292,7 @@ pub fn spawn(device: String, frames: Frames, exposure_lines: u32, analogue_gain_
                 };
                 quiet = 0;
 
-                match write(&device, controls) {
+                match write(&device, controls, raised) {
                     Err(e) if proven => {
                         // At debug, not an error twice a second for as long as the daemon runs: the
                         // first one already said what is wrong.
@@ -306,6 +308,7 @@ pub fn spawn(device: String, frames: Frames, exposure_lines: u32, analogue_gain_
                         );
                     }
                     Ok(()) => {
+                        raised = controls.gain > 256;
                         if worth_reading_back(proven, controls.exposure, exposure_lines) {
                             proven = true;
                             match read_exposure(&device) {
@@ -351,7 +354,7 @@ pub fn spawn(device: String, frames: Frames, exposure_lines: u32, analogue_gain_
 /// ISP, and `v4l2-ctl` fails a whole `--set-ctrl` if any name in it is unknown on the node. One
 /// call would mean a board that spells digital gain differently loses its shutter as well, which is
 /// the entire picture rather than the last stop of brightness.
-fn write(device: &str, controls: Controls) -> std::io::Result<()> {
+fn write(device: &str, controls: Controls, raised: bool) -> std::io::Result<()> {
     let Controls {
         exposure,
         analogue_gain,
@@ -361,12 +364,22 @@ fn write(device: &str, controls: Controls) -> std::io::Result<()> {
         device,
         &format!("exposure={exposure},analogue_gain={analogue_gain}"),
     )?;
-    // Only when it is doing something: at 1x this is a no-op write, and skipping it means a node
-    // with no digital gain never reports an error at all.
-    if gain > 256 {
+    if worth_writing_gain(gain, raised) {
         set(device, &format!("gain={gain}"))?;
     }
     Ok(())
+}
+
+/// whether the isp's digital gain has to go out with this step. `raised` says whether the last
+/// write left it above 1x.
+///
+/// 1x is where the isp starts, so a loop that has only ever asked for 1x stays quiet. that is what
+/// keeps a node spelling digital gain differently from failing every write it makes. once the gain
+/// has been put up though, the way back down is a write like any other, and dropping it as a no-op
+/// leaves the isp amplifying a picture the loop thinks it stopped amplifying. the loop then pays
+/// for the difference out of the shutter, which is the control it spends first on purpose.
+fn worth_writing_gain(gain: u32, raised: bool) -> bool {
+    gain > 256 || raised
 }
 
 fn set(device: &str, controls: &str) -> std::io::Result<()> {
@@ -534,6 +547,39 @@ mod tests {
             "{pinned:?}"
         );
         assert!(pinned.gain as f64 <= MAX_DIGITAL * 256.0, "{pinned:?}");
+    }
+
+    #[test]
+    fn the_digital_gain_is_written_on_the_way_back_down() {
+        // the bug this catches: `gain=256` is 1x, so it was dropped as a no-op, including the one
+        // step that takes the isp back to 1x after a dark room put it up. the picture stays
+        // amplified and the loop, which thinks it is not, spends the shutter making up for it.
+        assert!(!worth_writing_gain(256, false), "1x it never left");
+        assert!(worth_writing_gain(4096, false), "putting it up");
+        assert!(worth_writing_gain(256, true), "and taking it back down");
+        assert!(worth_writing_gain(512, true));
+    }
+
+    #[test]
+    fn a_room_that_gets_brighter_asks_for_1x_digital_gain_back() {
+        // and the loop's own arithmetic reaches that step, it is not a shape only a test can
+        // build: dark enough and it reaches for digital gain, bright enough and it hands it back.
+        let mut ae = Ae::starting_at(600, 1024);
+        let mut put_up = false;
+        for _ in 0..50 {
+            if let Some(step) = ae.step(1.0) {
+                put_up |= step.gain > 256;
+            }
+        }
+        assert!(put_up, "a dark room must reach for digital gain");
+
+        let mut handed_back = false;
+        for _ in 0..50 {
+            if let Some(step) = ae.step(250.0) {
+                handed_back |= step.gain == 256;
+            }
+        }
+        assert!(handed_back, "a bright room must ask for 1x back");
     }
 
     #[test]
