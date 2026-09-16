@@ -2,8 +2,9 @@
 
     python examples/fetch_a_frame_and_send_an_intent.py robot.local
 
-Frames come *outbound* from the robot to a socket this script opens, so the robot dials us: no
-relay candidate, no NAT traversal, and it works from anywhere the robot can reach.
+Frames here come over media.stream, the fallback for a program taking frames only: the robot dials
+a socket this script opens. For a single picture a GET to /frame on the console port is simpler,
+and for anything really watching the camera the answer is WebRTC.
 """
 
 import sys

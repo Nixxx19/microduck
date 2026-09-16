@@ -50,7 +50,20 @@ whatever you already have.
 
 ## Frames
 
-The robot does not serve frames, it **sends** them to a socket you open:
+One picture is a plain HTTP GET, served by the robot:
+
+```python
+import urllib.request
+
+png = urllib.request.urlopen("http://robot.local:8080/frame").read()
+```
+
+Anything really consuming the camera wants WebRTC, which the console already speaks: encrypted
+end to end, control on the same session, and a return path.
+
+`media.stream` is the fallback for a program taking frames only on a long-running stream, where
+relay metering is what matters. It has no return path and no control channel. `frames()` is that,
+and the robot dials a socket you open:
 
 ```python
 from duck import Duck, receive
@@ -60,10 +73,6 @@ threading.Thread(target=receive, args=(8099, print_frame), daemon=True).start()
 with Duck("robot.local") as duck:
     duck.frames(url="ws://192.168.1.20:8099", fps=1)
 ```
-
-That direction is the point. A robot behind a home router and a script anywhere else cannot pair
-without a relay candidate, and the robot dialling out means NAT is not a participant.
-`mediad/src/stream.rs` has the whole argument.
 
 `examples/fetch_a_frame_and_send_an_intent.py` is both halves in about thirty lines.
 

@@ -136,10 +136,22 @@ fn permits(call: &proto::Call) -> bool {
         // are permitted, including the two that change things.
         NetStatus => true,
         NetScan => true,
-        // Carries a wifi passphrase, which §7 requires to travel over a paired, encrypted link.
-        // It does: the characteristic sets `encrypt_authenticated_write` and the PIN agent makes
-        // the bond an authenticated one (`crate::pairing`). Routing this before that existed
-        // would have been the ordering mistake.
+        // Carries a wifi passphrase, and this arm used to claim that travels over a paired,
+        // authenticated link. It does not, and the claim was wrong in both halves.
+        //
+        // The characteristic sets `encrypt_write`, not `encrypt_authenticated_write`
+        // (`crate::bluez`) — and it sets it from `--require-pairing`, which is **off by default**,
+        // so on an ordinary board there is no encryption on this link at all. Nor could the
+        // stronger flag be satisfied if it were set: the agent leaves every handler `None`, which
+        // BlueZ publishes as `NoInputNoOutput`, so the bond is just-works and therefore encrypted
+        // but *unauthenticated*. `crate::pairing` records why a headless robot cannot do better,
+        // and `docs/design/app-path-design.md` §5.5 is the state of it.
+        //
+        // So what actually stands behind this route today is the PIN check in `crate::session` and
+        // the ten metres of radio range, and the passphrase crosses in clear. That is a known,
+        // accepted, pre-shipping cost — `btd` warns about it at every start — and §8.1 is the
+        // blocker that has to close before a robot goes to anyone. Routed anyway because a robot
+        // with no network cannot be given one any other way, which is what this transport is for.
         NetConnect(_) => true,
         NetForget(_) => true,
 
@@ -352,6 +364,10 @@ fn permits(call: &proto::Call) -> bool {
         // The transport is the gate here, not the credential.
         PolicyFetch(_) | PolicyInstall(_) => true,
 
+        // The detector's set, by the same argument: a read that reaches the network, and an
+        // install whoever tapped it is standing next to.
+        DetectorCheck | DetectorInstall(_) => true,
+
         // ── the account, which BLE is the right transport for ────────────────
         //
         // Signing the robot in to a Hugging Face account is what makes it reachable from outside
@@ -502,6 +518,8 @@ mod tests {
                 // the download, the shape gate at load, the clamps, the fall reflex.
                 proto::method::POLICY_INSTALL,
                 proto::method::POLICY_FETCH,
+                // Replacing the detector, by the same argument as the policy set.
+                proto::method::DETECTOR_INSTALL,
                 // Binding the robot to a Hugging Face account, and unbinding it. Provisioning,
                 // like the two below it and for the same reason: a robot out of a box has no
                 // network, so it has no console and no LAN to open one from, and this is the
@@ -688,6 +706,8 @@ mod tests {
                 query: "microduck".to_owned(),
             }),
             proto::Call::PolicyInstall(proto::PolicyInstallParams::default()),
+            proto::Call::DetectorCheck,
+            proto::Call::DetectorInstall(proto::PolicyInstallParams::default()),
         ] {
             assert_eq!(
                 upstream_for(&call),

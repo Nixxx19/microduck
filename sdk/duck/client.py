@@ -136,9 +136,11 @@ class Duck:
     def frames(self, url: str, fps: float | None = None, longest: int | None = None) -> Any:
         """Tell the robot to send JPEG frames to a WebSocket it dials.
 
-        **Outbound, and that is the point.** The robot is behind somebody's router and the script
-        may be anywhere; a robot that dials out needs no relay candidate and no NAT traversal.
-        `stream.rs` has the argument. `receive` below is the other end of it.
+        **The fallback, not the good path.** A script that wants one picture should GET `/frame`
+        on the console port, and anything really consuming the camera wants WebRTC, which is
+        encrypted end to end, carries control on the same session and has a return path. This is
+        for a long-running stream of frames only, where relay metering is what matters: no return
+        path, no control channel. `stream.rs` is the mechanism, and `receive` is the far end.
         """
         params: dict[str, Any] = {"url": url}
         if fps is not None:
